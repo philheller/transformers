@@ -1659,6 +1659,7 @@ class GenerationMixin:
         self._validate_model_class()
         tokenizer = kwargs.pop("tokenizer", None)  # Pull this out first, we only use it for stopping criteria
         generation_config, model_kwargs = self._prepare_generation_config(generation_config, **kwargs)
+        print(generation_config, model_kwargs)
         self._validate_model_kwargs(model_kwargs.copy())
         self._validate_assistant(assistant_model)
 
@@ -1857,6 +1858,12 @@ class GenerationMixin:
         )
 
         # 10. go into different generation modes
+        # todo figure out for every mode, what continuation would look like
+        # ? input for every configuration step would have to be the output from the previous step
+
+        
+        # ! leaving out speculative decoding for now
+
         if generation_mode == GenerationMode.ASSISTED_GENERATION:
             if generation_config.num_return_sequences > 1:
                 raise ValueError(
@@ -1910,6 +1917,9 @@ class GenerationMixin:
             )
 
         elif generation_mode == GenerationMode.CONTRASTIVE_SEARCH:
+            if generation_config.resume_generation:
+                # todo implement
+                print("Resuming generation")
             if not model_kwargs["use_cache"]:
                 raise ValueError("Contrastive search requires `use_cache=True`")
             if self._is_stateful:
@@ -1929,6 +1939,9 @@ class GenerationMixin:
             )
 
         elif generation_mode in (GenerationMode.SAMPLE, GenerationMode.GREEDY_SEARCH):
+            if generation_config.resume_generation:
+                # todo implement
+                print("Resuming generation")
             # 11. prepare logits warper
             prepared_logits_warper = (
                 self._get_logits_warper(generation_config, device=input_ids.device)
@@ -1975,6 +1988,12 @@ class GenerationMixin:
                 max_length=generation_config.max_length,
             )
 
+            # print("Input ids")
+            # print(input_ids.size)
+            # print(input_ids)
+            # print("Model kwargs")
+            # print(model_kwargs)
+
             # 13. interleave input_ids with `num_beams` additional sequences per batch
             input_ids, model_kwargs = self._expand_inputs_for_generation(
                 input_ids=input_ids,
@@ -1983,19 +2002,42 @@ class GenerationMixin:
                 **model_kwargs,
             )
 
+            # print("Input ids")
+            # print(input_ids.size)
+            # print(input_ids)
+            # print("Model kwargs")
+            # print(model_kwargs)
+
             # 14. run beam sample
-            result = self._beam_search(
-                input_ids,
-                beam_scorer,
-                logits_processor=prepared_logits_processor,
-                logits_warper=prepared_logits_warper,
-                stopping_criteria=prepared_stopping_criteria,
-                generation_config=generation_config,
-                synced_gpus=synced_gpus,
-                **model_kwargs,
-            )
+            if generation_config.resume_generation:
+                self._continue_beam_search(
+                    input_hyps,
+                    beam_scorer,
+                    logits_processor=prepared_logits_processor,
+                    logits_warper=prepared_logits_warper,
+                    stopping_criteria=prepared_stopping_criteria,
+                    generation_config=generation_config,
+                    synced_gpus=synced_gpus,
+                    **model_kwargs,
+                )
+            else: 
+                result = self._beam_search(
+                    input_ids,
+                    beam_scorer,
+                    logits_processor=prepared_logits_processor,
+                    logits_warper=prepared_logits_warper,
+                    stopping_criteria=prepared_stopping_criteria,
+                    generation_config=generation_config,
+                    synced_gpus=synced_gpus,
+                    **model_kwargs,
+                )
+
+            
 
         elif generation_mode == GenerationMode.GROUP_BEAM_SEARCH:
+            if generation_config.resume_generation:
+                # todo implement
+                print("Resuming generation")
             # 11. prepare beam search scorer
             beam_scorer = BeamSearchScorer(
                 batch_size=batch_size,
@@ -2026,6 +2068,9 @@ class GenerationMixin:
             )
 
         elif generation_mode == GenerationMode.CONSTRAINED_BEAM_SEARCH:
+            if generation_config.resume_generation:
+                # todo implement
+                print("Resuming generation")
             final_constraints = []
             if generation_config.constraints is not None:
                 final_constraints = generation_config.constraints
@@ -2878,12 +2923,14 @@ class GenerationMixin:
                 f"{logits_warper})."
             )
 
+        print("Batch size:", len(beam_scorer._beam_hyps))
         batch_size = len(beam_scorer._beam_hyps)
         num_beams = beam_scorer.num_beams
 
         batch_beam_size, cur_len = input_ids.shape
         model_kwargs = self._get_initial_cache_position(input_ids, model_kwargs)
 
+        print("batch beam size", batch_beam_size,"curl len",  cur_len )
         if num_beams * batch_size != batch_beam_size:
             raise ValueError(
                 f"Batch dimension of `input_ids` should be {num_beams * batch_size}, but is {batch_beam_size}."
@@ -3033,6 +3080,8 @@ class GenerationMixin:
                 beam_indices=beam_indices,
                 decoder_prompt_len=decoder_prompt_len,
             )
+            print("Beam Outputs")
+            print(beam_outputs)
 
             beam_scores = beam_outputs["next_beam_scores"]
             beam_next_tokens = beam_outputs["next_beam_tokens"]
@@ -3109,6 +3158,21 @@ class GenerationMixin:
                 )
         else:
             return sequence_outputs["sequences"]
+
+    def _continue_beam_search(
+        self,
+        input_ids: torch.LongTensor,
+        beam_scorer: BeamScorer,
+        logits_processor: LogitsProcessorList,
+        stopping_criteria: StoppingCriteriaList,
+        generation_config: GenerationConfig,
+        synced_gpus: bool,
+        logits_warper: Optional[LogitsProcessorList] = None,
+        **model_kwargs,
+    ) -> Union[GenerateBeamOutput, torch.LongTensor]:
+        # todo implement this
+
+        pass
 
     def _beam_sample(
         self,
