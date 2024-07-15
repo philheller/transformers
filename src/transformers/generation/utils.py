@@ -1970,6 +1970,7 @@ class GenerationMixin:
             )
 
         elif generation_mode in (GenerationMode.BEAM_SAMPLE, GenerationMode.BEAM_SEARCH):
+            print(20 * "#", " Running BS")
             # 11. prepare logits warper
             prepared_logits_warper = (
                 self._get_logits_warper(generation_config, device=input_ids.device)
@@ -2008,6 +2009,7 @@ class GenerationMixin:
             # print("Model kwargs")
             # print(model_kwargs)
 
+            print("getting results")
             # 14. run beam sample
             if generation_config.resume_generation:
                 self._continue_beam_search(
@@ -2031,8 +2033,8 @@ class GenerationMixin:
                     synced_gpus=synced_gpus,
                     **model_kwargs,
                 )
-
-            
+            print(result)
+            # print(result.shape)
 
         elif generation_mode == GenerationMode.GROUP_BEAM_SEARCH:
             if generation_config.resume_generation:
