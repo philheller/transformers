@@ -2019,7 +2019,10 @@ class GenerationMixin:
                 do_early_stopping=generation_config.early_stopping,
                 num_beam_hyps_to_keep=generation_config.num_return_sequences,
                 max_length=generation_config.max_length,
+                use_raw_hypotheses=generation_config.resume_generation,
             )
+            print("BS Scorer (num beams, batch size)")
+            print(beam_scorer.num_beams, len(beam_scorer._beam_hyps))
 
 
             # # interleaving does expands the input_ids to num_beams * batch_size
@@ -2031,23 +2034,21 @@ class GenerationMixin:
             if generation_config.resume_generation:
                 # 13. interleave input_ids with `num_beams` additional sequences per batch
                 # using output from past generation
-
-                # # simulate missing hypotheses
-                # print("Model kwargs sssssssssssssss")
-                # print(model_kwargs)
-                # reduced_hyps = past_outputs.sequences[:-1]
-                # attention_mask = {
-                #     "attention_mask": torch.ones_like(reduced_hyps)
-                # }
+                print(50 * "=", " Input ids and model kwargs bf expand")
+                print(input_ids)
+                print(model_kwargs)
                 input_ids, model_kwargs = self._expand_input_hypotheses_for_generation(
                     input_ids=past_outputs.sequences,
                     expand_size=generation_config.num_beams,
                     **model_kwargs,
                 )
+                print(50 * "=", " Input ids and model kwargs af expand")
+                print(input_ids)
+                print(model_kwargs)
 
                 print(20 * "#", " Continue BS")
                 # 14. run beam sample
-                self._continue_beam_search(
+                result = self._continue_beam_search(
                     input_ids,
                     beam_scorer,
                     logits_processor=prepared_logits_processor,
@@ -2058,6 +2059,9 @@ class GenerationMixin:
                     **model_kwargs,
                 )
             else: 
+                print(50 * "=", " Input ids and model kwargs bf expand")
+                print(input_ids)
+                print(model_kwargs)
                 # 13. interleave input_ids with `num_beams` additional sequences per batch
                 input_ids, model_kwargs = self._expand_inputs_for_generation(
                     input_ids=input_ids,
@@ -2065,6 +2069,9 @@ class GenerationMixin:
                     is_encoder_decoder=self.config.is_encoder_decoder,
                     **model_kwargs,
                 )
+                print(50 * "=", " Input ids and model kwargs af expand")
+                print(input_ids)
+                print(model_kwargs)
 
                 print(20 * "#", " Running BS")
                 # 14. run beam sample

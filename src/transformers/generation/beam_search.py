@@ -169,6 +169,7 @@ class BeamSearchScorer(BeamScorer):
         num_beam_hyps_to_keep: Optional[int] = 1,
         num_beam_groups: Optional[int] = 1,
         max_length: Optional[int] = None,
+        use_raw_hypotheses: Optional[bool] = False,
     ):
         self.num_beams = num_beams
         self.device = device
@@ -177,6 +178,7 @@ class BeamSearchScorer(BeamScorer):
         self.num_beam_hyps_to_keep = num_beam_hyps_to_keep
         self.num_beam_groups = num_beam_groups
         self.group_size = self.num_beams // self.num_beam_groups
+        self.use_raw_hypotheses = use_raw_hypotheses # when passing hypotheses instead of a single starting beam
 
         self._is_init = False
         # self._beam_hyps[i*self.num_beam_groups+j] is the beam_hyps of the j-th group in the i-th mini-batch.
@@ -188,12 +190,12 @@ class BeamSearchScorer(BeamScorer):
                 early_stopping=self.do_early_stopping,
                 max_length=max_length,
             )
-            for _ in range(batch_size * self.num_beam_groups)
+            for _ in range((batch_size if not self.use_raw_hypotheses else int(batch_size / self.num_beams)) * self.num_beam_groups)
         ]
         # self._done[i*self.num_beam_groups+j] indicates whether the generation of the beam_hyps of the j-th group
         # in the i-th mini-batch is complete.
         self._done = torch.tensor(
-            [False for _ in range(batch_size * self.num_beam_groups)], dtype=torch.bool, device=self.device
+            [False for _ in range((batch_size if not self.use_raw_hypotheses else int(batch_size / self.num_beams)) * self.num_beam_groups)], dtype=torch.bool, device=self.device
         )
 
         if not isinstance(num_beams, int) or num_beams <= 1:
