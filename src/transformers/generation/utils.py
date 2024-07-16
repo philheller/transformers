@@ -256,6 +256,7 @@ class GenerateBeamDecoderOnlyOutput(ModelOutput):
     attentions: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     past_key_values: Optional[Tuple[Tuple[Tuple[torch.FloatTensor]]]] = None
+    last_beam_scores: Optional[torch.FloatTensor] = None
 
 
 @dataclass
@@ -317,6 +318,7 @@ class GenerateBeamEncoderDecoderOutput(ModelOutput):
     cross_attentions: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     decoder_hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     past_key_values: Optional[Tuple[Tuple[Tuple[torch.FloatTensor]]]] = None
+    last_beam_scores: Optional[torch.FloatTensor] = None
 
 
 # Equivalent classes (kept for retrocompatibility purposes)
@@ -1605,6 +1607,7 @@ class GenerationMixin:
         streamer: Optional["BaseStreamer"] = None,
         negative_prompt_ids: Optional[torch.Tensor] = None,
         negative_prompt_attention_mask: Optional[torch.Tensor] = None,
+        last_beam_scores: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
         r"""
@@ -1742,7 +1745,9 @@ class GenerationMixin:
         if not self.config.is_encoder_decoder and model_input_name == "inputs_embeds":
             model_kwargs["use_cache"] = True
         else:
-            model_kwargs["use_cache"] = generation_config.use_cache
+            # todo fix past_key_values
+            # model_kwargs["use_cache"] = generation_config.use_cache
+            model_kwargs["use_cache"] = False
 
         if not kwargs_has_attention_mask and requires_attention_mask and accepts_attention_mask:
             model_kwargs["attention_mask"] = self._prepare_attention_mask_for_generation(
@@ -2036,8 +2041,8 @@ class GenerationMixin:
                 # using output from past generation
                 print(50 * "=", " Input ids and model kwargs bf expand")
                 print(input_ids)
-                print(model_kwargs)
-                input_ids, model_kwargs = self._expand_input_hypotheses_for_generation(
+                # print(model_kwargs)
+                put_ids, model_kwargs = self._expand_input_hypotheses_for_generation(
                     input_ids=past_outputs.sequences,
                     expand_size=generation_config.num_beams,
                     **model_kwargs,
@@ -2045,6 +2050,11 @@ class GenerationMixin:
                 print(50 * "=", " Input ids and model kwargs af expand")
                 print(input_ids)
                 print(model_kwargs)
+                # get last_beam_scores from kwargs
+                print("Last beam scores")
+                print(
+                    last_beam_scores
+                )
 
                 print(20 * "#", " Continue BS")
                 # 14. run beam sample
@@ -2056,6 +2066,7 @@ class GenerationMixin:
                     stopping_criteria=prepared_stopping_criteria,
                     generation_config=generation_config,
                     synced_gpus=synced_gpus,
+                    last_beam_scores=last_beam_scores,
                     **model_kwargs,
                 )
             else: 
@@ -3017,6 +3028,7 @@ class GenerationMixin:
         beam_scores = beam_scores.view((batch_size * num_beams,))
         print("Beam scores at init")
         print(beam_scores)
+        print("Do sample is set to: ", do_sample)
 
         this_peer_finished = False
 
@@ -3086,6 +3098,18 @@ class GenerationMixin:
             next_token_scores = next_token_scores_processed + beam_scores[:, None].expand_as(
                 next_token_scores_processed
             )
+            # set higher precision
+            torch.set_printoptions(precision=10)
+            print("Beam scores details")
+            print("Next token scores", next_token_scores.shape)
+            print(next_token_scores)
+            print("Next token scores processed", next_token_scores_processed.shape)
+            print(next_token_scores_processed)
+            print("Beam scores")
+            print(beam_scores)
+            print(beam_scores[:, None].expand_as(next_token_scores_processed))
+            # restore previous precision
+            torch.set_printoptions(precision=4)
 
             # Store scores, attentions and hidden_states when required
             if return_dict_in_generate:
@@ -3141,7 +3165,7 @@ class GenerationMixin:
             )
             print("Beam Outputs")
             print(beam_outputs)
-            print("Beam scores after init")
+            print("Beam scores [Updated]")
             print(beam_scores)
 
             beam_scores = beam_outputs["next_beam_scores"]
@@ -3189,6 +3213,8 @@ class GenerationMixin:
         )
         print("Finalized sequence scores:")
         print(sequence_outputs)
+        print("Last recorded Beam Score")
+        print(beam_scores)
         if return_dict_in_generate:
             if not output_scores:
                 sequence_outputs["sequence_scores"] = None
@@ -3206,6 +3232,7 @@ class GenerationMixin:
                     cross_attentions=cross_attentions,
                     decoder_hidden_states=decoder_hidden_states,
                     past_key_values=model_kwargs.get("past_key_values"),
+                    last_beam_scores=beam_scores,
                 )
             else:
                 return GenerateBeamDecoderOnlyOutput(
@@ -3217,6 +3244,7 @@ class GenerationMixin:
                     attentions=decoder_attentions,
                     hidden_states=decoder_hidden_states,
                     past_key_values=model_kwargs.get("past_key_values"),
+                    last_beam_scores=beam_scores,
                 )
         else:
             return sequence_outputs["sequences"]
@@ -3230,6 +3258,7 @@ class GenerationMixin:
         generation_config: GenerationConfig,
         synced_gpus: bool,
         logits_warper: Optional[LogitsProcessorList] = None,
+        last_beam_scores: Optional[torch.FloatTensor] = None,
         **model_kwargs,
     ) -> Union[GenerateBeamOutput, torch.LongTensor]:
         r"""
@@ -3318,10 +3347,15 @@ class GenerationMixin:
         # initialise score of first beam with 0 and the rest with -1e9. This makes sure that only tokens
         # of the first beam are considered to avoid sampling the exact same tokens across all beams.
         beam_scores = torch.zeros((batch_size, num_beams), dtype=torch.float, device=input_ids.device)
-        # beam_scores[:, 1:] = -1e9
+        # todo fix past beam scores to be initialized with last product
+        if last_beam_scores is not None:
+            beam_scores = last_beam_scores
+        else:
+            beam_scores[:, 1:] = -1e9
         beam_scores = beam_scores.view((batch_size * num_beams,))
         print("Beam scores at init")
         print(beam_scores)
+        print("Do sample is set to: ", do_sample)
 
         this_peer_finished = False
 
@@ -3391,6 +3425,14 @@ class GenerationMixin:
             next_token_scores = next_token_scores_processed + beam_scores[:, None].expand_as(
                 next_token_scores_processed
             )
+            print("Beam scores details")
+            print("Next token scores")
+            print(next_token_scores)
+            print("Next token scores processed")
+            print(next_token_scores_processed)
+            print("Beam scores")
+            print(beam_scores)
+            print(beam_scores[:, None].expand_as(next_token_scores_processed))
 
             # Store scores, attentions and hidden_states when required
             if return_dict_in_generate:
@@ -3444,12 +3486,13 @@ class GenerationMixin:
                 beam_indices=beam_indices,
                 decoder_prompt_len=decoder_prompt_len,
             )
-            print("Beam Outputs")
-            print(beam_outputs)
 
             beam_scores = beam_outputs["next_beam_scores"]
             beam_next_tokens = beam_outputs["next_beam_tokens"]
             beam_idx = beam_outputs["next_beam_indices"]
+
+            print("Beam Outputs")
+            print(beam_outputs)
 
             input_ids = torch.cat([input_ids[beam_idx, :], beam_next_tokens.unsqueeze(-1)], dim=-1)
 
@@ -3508,6 +3551,7 @@ class GenerationMixin:
                     cross_attentions=cross_attentions,
                     decoder_hidden_states=decoder_hidden_states,
                     past_key_values=model_kwargs.get("past_key_values"),
+                    last_beam_scores=beam_scores,
                 )
             else:
                 return GenerateBeamDecoderOnlyOutput(
@@ -3519,6 +3563,7 @@ class GenerationMixin:
                     attentions=decoder_attentions,
                     hidden_states=decoder_hidden_states,
                     past_key_values=model_kwargs.get("past_key_values"),
+                    last_beam_scores=beam_scores,
                 )
         else:
             return sequence_outputs["sequences"]
