@@ -1744,9 +1744,8 @@ class GenerationMixin:
         if not self.config.is_encoder_decoder and model_input_name == "inputs_embeds":
             model_kwargs["use_cache"] = True
         else:
-            # todo fix past_key_values
             # model_kwargs["use_cache"] = generation_config.use_cache
-            model_kwargs["use_cache"] = False
+            model_kwargs["use_cache"] = False # ? cache not adapted for input output mapping
 
         if not kwargs_has_attention_mask and requires_attention_mask and accepts_attention_mask:
             model_kwargs["attention_mask"] = self._prepare_attention_mask_for_generation(
@@ -2028,7 +2027,7 @@ class GenerationMixin:
 
             if generation_config.resume_generation:
                 # 13. is obsolete for this, since the output of last generation is used
-                # which should already match the right shape
+                # which should already match the required shape
                 if last_beam_scores is not None or last_scores is not None:
                     logger.warning_once("Continuing beam search with `resume_generation=True` and `last_beam_scores` or `last_scores` is meant to be used for testing purposes only. It may lead to unexpected results.")
 
@@ -3005,6 +3004,8 @@ class GenerationMixin:
 
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            if generation_config.reproducibility is True:
+                torch.manual_seed(42) # this will reset the seed upon each loop
 
             # if sequential is True, split the input to batches of batch_size and run sequentially
             if sequential:

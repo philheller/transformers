@@ -249,6 +249,10 @@ class GenerationConfig(PushToHubMixin):
                         The downside of this scheme is that it considers all possible next tokens and can be slower than "lefthash".
             - context_width(`int`):
                 The context length of previous tokens to use in seeding. Higher context length makes watermarking more robust.
+        reproducibility (`bool`, *optional*):
+            If set to `True`, the configuration will have steps in place to make tests easier and reproduceable. This is useful for
+            debugging and testing purposes. The exact measures will depend on the decoding strategies, but many will have to do with
+            seeds and how they are set at each generation loop step.
 
         > Parameters that define the output variables of generate
 
@@ -375,6 +379,7 @@ class GenerationConfig(PushToHubMixin):
             self.watermarking_config = watermarking_config
         else:
             self.watermarking_config = WatermarkingConfig.from_dict(watermarking_config)
+        self.reproducibility = kwargs.pop("reproducibility", False)
 
         # Parameters that define the output variables of `generate`
         self.num_return_sequences = kwargs.pop("num_return_sequences", 1)
