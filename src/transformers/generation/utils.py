@@ -157,6 +157,9 @@ class GenerateDecoderOnlyOutput(ModelOutput):
     hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     past_key_values: Optional[Tuple[Tuple[Tuple[torch.FloatTensor]]]] = None
     attention_mask: Optional[torch.LongTensor] = None
+    logit_for_next_step: Optional[torch.FloatTensor] = None
+    last_hidden_states: Optional[torch.FloatTensor] = None
+    past_key_values_for_continuation: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
 
 
 @dataclass
@@ -210,7 +213,9 @@ class GenerateEncoderDecoderOutput(ModelOutput):
     decoder_hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     past_key_values: Optional[Tuple[Tuple[Tuple[torch.FloatTensor]]]] = None
     attention_mask: Optional[torch.LongTensor] = None
-
+    logit_for_next_step: Optional[torch.FloatTensor] = None
+    last_hidden_states: Optional[torch.FloatTensor] = None
+    past_key_values_for_continuation: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
 
 @dataclass
 class GenerateBeamDecoderOnlyOutput(ModelOutput):
@@ -1607,6 +1612,8 @@ class GenerationMixin:
         negative_prompt_ids: Optional[torch.Tensor] = None,
         negative_prompt_attention_mask: Optional[torch.Tensor] = None,
         last_beam_scores: Optional[torch.Tensor] = None, # needed for testing continuation of bs
+        logit_for_next_step: Optional[torch.Tensor] = None, # needed for testing continuation of cs
+        last_hidden_states: Optional[torch.Tensor] = None, # needed for testing continuation of cs
         last_scores: Optional[torch.Tensor] = None, # needed for testing continuation of bs
         **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
@@ -1899,9 +1906,10 @@ class GenerationMixin:
         )
 
         # 10. go into different generation modes
-        # todo figure out for every mode, what continuation would look like
+        # todo:phil figure out for every mode, what continuation would look like
         # ? input for every configuration step would have to be the output from the previous step
         # ! leaving out speculative decoding for now
+        print("GENERATION_MODE", generation_mode)
 
         if generation_mode == GenerationMode.ASSISTED_GENERATION:
             if generation_config.num_return_sequences > 1:
@@ -1956,9 +1964,6 @@ class GenerationMixin:
             )
 
         elif generation_mode == GenerationMode.CONTRASTIVE_SEARCH:
-            if generation_config.resume_generation:
-                # todo implement
-                print("Resuming generation")
             if not model_kwargs["use_cache"]:
                 raise ValueError("Contrastive search requires `use_cache=True`")
             if self._is_stateful:
@@ -1967,15 +1972,29 @@ class GenerationMixin:
                     f"contrastive search is not supported with stateful models, such as {self.__class__.__name__}"
                 )
 
-            result = self._contrastive_search(
-                input_ids,
-                logits_processor=prepared_logits_processor,
-                stopping_criteria=prepared_stopping_criteria,
-                generation_config=generation_config,
-                synced_gpus=synced_gpus,
-                streamer=streamer,
-                **model_kwargs,
-            )
+            if generation_config.resume_generation:
+                result = self._contrastive_search(
+                    input_ids,
+                    logits_processor=prepared_logits_processor,
+                    stopping_criteria=prepared_stopping_criteria,
+                    generation_config=generation_config,
+                    synced_gpus=synced_gpus,
+                    streamer=streamer,
+                    last_scores=last_scores,
+                    logit_for_next_step=logit_for_next_step,
+                    last_hidden_states=last_hidden_states,
+                    **model_kwargs,
+                )
+            else:
+                result = self._contrastive_search(
+                    input_ids,
+                    logits_processor=prepared_logits_processor,
+                    stopping_criteria=prepared_stopping_criteria,
+                    generation_config=generation_config,
+                    synced_gpus=synced_gpus,
+                    streamer=streamer,
+                    **model_kwargs,
+                )
 
         elif generation_mode in (GenerationMode.SAMPLE, GenerationMode.GREEDY_SEARCH):
             # 11. prepare logits warper
@@ -2279,6 +2298,9 @@ class GenerationMixin:
         generation_config: GenerationConfig,
         synced_gpus: bool,
         streamer: Optional["BaseStreamer"],
+        last_scores: Optional[torch.FloatTensor] = None,
+        logit_for_next_step: Optional[torch.FloatTensor] = None,
+        last_hidden_states: Optional[torch.FloatTensor] = None,
         **model_kwargs,
     ) -> Union[GenerateNonBeamOutput, torch.LongTensor]:
         r"""
@@ -2327,6 +2349,9 @@ class GenerationMixin:
         # init attention / hidden states / scores tuples
         raw_logits = () if (return_dict_in_generate and output_logits) else None
         scores = () if (return_dict_in_generate and output_scores) else None
+        # if available, use old scores
+        if last_scores is not None:
+            scores = last_scores # necessary to compare continuation of cs with vanilla cs
         decoder_attentions = () if (return_dict_in_generate and output_attentions) else None
         cross_attentions = () if (return_dict_in_generate and output_attentions) else None
         decoder_hidden_states = () if (return_dict_in_generate and output_hidden_states) else None
@@ -2341,10 +2366,13 @@ class GenerationMixin:
         # keep track of which sequences are already finished
         batch_size = input_ids.shape[0]
         unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
-        model_kwargs = self._get_initial_cache_position(input_ids, model_kwargs)
+        if model_kwargs.get("cache_position", None) is None:
+            model_kwargs = self._get_initial_cache_position(input_ids, model_kwargs)
 
         this_peer_finished = False
 
+        logit_for_next_step = logit_for_next_step if logit_for_next_step is not None else None
+        last_hidden_states = last_hidden_states if last_hidden_states is not None else None
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             # if the first step in the loop, encode all the prefix and obtain: (1) past_key_values;
             # (2) last_hidden_states; (3) logit_for_next_step; (4) update model kwargs for the next step
@@ -2432,7 +2460,8 @@ class GenerationMixin:
 
             # This is needed to properly delete outputs.logits which may be very large for this first iteration
             # Otherwise a reference to outputs.logits is kept all along until after the next call to self.forward()
-            del outputs
+            if "outputs" in locals():
+                del outputs
 
             if not sequential:
                 # Replicates the new past_key_values to match the `top_k` candidates
@@ -2616,6 +2645,9 @@ class GenerationMixin:
 
         if streamer is not None:
             streamer.end()
+        
+        # for continuation, this is necessary as the next loop expects the current (not cropped) past_key_values
+        past_key_values_for_continuation = model_kwargs.get("past_key_values", None)
 
         if return_dict_in_generate:
             # Contrastive search works by forward looking at the next token, so we need to exclude it from
@@ -2646,6 +2678,10 @@ class GenerationMixin:
                     cross_attentions=cross_attentions,
                     decoder_hidden_states=decoder_hidden_states,
                     past_key_values=model_kwargs.get("past_key_values"),
+                    past_key_values_for_continuation = past_key_values_for_continuation,
+                    attention_mask=model_kwargs.get("attention_mask"),
+                    logit_for_next_step=logit_for_next_step,
+                    last_hidden_states=last_hidden_states,
                 )
             else:
                 return GenerateDecoderOnlyOutput(
@@ -2655,6 +2691,10 @@ class GenerationMixin:
                     attentions=decoder_attentions,
                     hidden_states=decoder_hidden_states,
                     past_key_values=model_kwargs.get("past_key_values"),
+                    past_key_values_for_continuation = past_key_values_for_continuation,
+                    attention_mask=model_kwargs.get("attention_mask"),
+                    logit_for_next_step=logit_for_next_step,
+                    last_hidden_states=last_hidden_states,
                 )
         else:
             return input_ids
