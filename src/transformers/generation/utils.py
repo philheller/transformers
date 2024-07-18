@@ -1697,7 +1697,10 @@ class GenerationMixin:
         self._validate_model_class()
         tokenizer = kwargs.pop("tokenizer", None)  # Pull this out first, we only use it for stopping criteria
         generation_config, model_kwargs = self._prepare_generation_config(generation_config, **kwargs)
-        print(generation_config, model_kwargs)
+        # todo:phil remove in prod
+        print(generation_config, 
+                {k: v for k, v in model_kwargs.items() if k != 'past_key_values'}
+                ) 
         self._validate_model_kwargs(model_kwargs.copy())
         self._validate_assistant(assistant_model)
 
@@ -1745,8 +1748,7 @@ class GenerationMixin:
         if not self.config.is_encoder_decoder and model_input_name == "inputs_embeds":
             model_kwargs["use_cache"] = True
         else:
-            # model_kwargs["use_cache"] = generation_config.use_cache
-            model_kwargs["use_cache"] = False # ? cache not adapted for input output mapping
+            model_kwargs["use_cache"] = generation_config.use_cache
 
         if not kwargs_has_attention_mask and requires_attention_mask and accepts_attention_mask:
             model_kwargs["attention_mask"] = self._prepare_attention_mask_for_generation(
@@ -2067,7 +2069,6 @@ class GenerationMixin:
                     synced_gpus=synced_gpus,
                     **model_kwargs,
                 )
-
 
         elif generation_mode == GenerationMode.GROUP_BEAM_SEARCH:
             if generation_config.resume_generation:
