@@ -156,6 +156,7 @@ class GenerateDecoderOnlyOutput(ModelOutput):
     attentions: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     past_key_values: Optional[Tuple[Tuple[Tuple[torch.FloatTensor]]]] = None
+    attention_mask: Optional[torch.LongTensor] = None
 
 
 @dataclass
@@ -208,6 +209,7 @@ class GenerateEncoderDecoderOutput(ModelOutput):
     cross_attentions: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     decoder_hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     past_key_values: Optional[Tuple[Tuple[Tuple[torch.FloatTensor]]]] = None
+    attention_mask: Optional[torch.LongTensor] = None
 
 
 @dataclass
@@ -1595,7 +1597,6 @@ class GenerationMixin:
     def generate(
         self,
         inputs: Optional[torch.Tensor] = None,
-        past_outputs: Optional[Union[GenerateOutput, torch.LongTensor]] = None,
         generation_config: Optional[GenerationConfig] = None,
         logits_processor: Optional[LogitsProcessorList] = None,
         stopping_criteria: Optional[StoppingCriteriaList] = None,
@@ -1975,9 +1976,6 @@ class GenerationMixin:
             )
 
         elif generation_mode in (GenerationMode.SAMPLE, GenerationMode.GREEDY_SEARCH):
-            if generation_config.resume_generation:
-                # todo implement
-                print("Resuming generation")
             # 11. prepare logits warper
             prepared_logits_warper = (
                 self._get_logits_warper(generation_config, device=input_ids.device)
@@ -1993,6 +1991,9 @@ class GenerationMixin:
                 **model_kwargs,
             )
 
+            if generation_config.resume_generation and last_scores is not None:
+                logger.warning_once("Continuing greedy search with `resume_generation=True` and `last_scores` is meant to be used for testing purposes only. It may lead to unexpected results.")
+
             # 13. run sample (it degenerates to greedy search when `generation_config.do_sample=False`)
             result = self._sample(
                 input_ids,
@@ -2002,6 +2003,7 @@ class GenerationMixin:
                 generation_config=generation_config,
                 synced_gpus=synced_gpus,
                 streamer=streamer,
+                last_scores=last_scores,
                 **model_kwargs,
             )
 
@@ -2693,6 +2695,7 @@ class GenerationMixin:
         synced_gpus: bool,
         streamer: Optional["BaseStreamer"],
         logits_warper: Optional[LogitsProcessorList] = None,
+        last_scores: Optional[Tuple[torch.FloatTensor]] = None,
         **model_kwargs,
     ) -> Union[GenerateNonBeamOutput, torch.LongTensor]:
         r"""
@@ -2748,6 +2751,9 @@ class GenerationMixin:
 
         # init attention / hidden states / scores tuples
         scores = () if (return_dict_in_generate and output_scores) else None
+        # if available, use old scores
+        if last_scores is not None:
+            scores = last_scores # necessary to compare continuation of bs with vanilla bs
         raw_logits = () if (return_dict_in_generate and output_logits) else None
         decoder_attentions = () if (return_dict_in_generate and output_attentions) else None
         cross_attentions = () if (return_dict_in_generate and output_attentions) else None
@@ -2767,6 +2773,8 @@ class GenerationMixin:
         model_kwargs = self._get_initial_cache_position(input_ids, model_kwargs)
 
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
+            if generation_config.reproducibility is True:
+                torch.manual_seed(42) # this will reset the seed upon each loop
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
@@ -2853,6 +2861,7 @@ class GenerationMixin:
                     cross_attentions=cross_attentions,
                     decoder_hidden_states=decoder_hidden_states,
                     past_key_values=model_kwargs.get("past_key_values"),
+                    attention_mask=model_kwargs.get("attention_mask"),
                 )
             else:
                 return GenerateDecoderOnlyOutput(
@@ -2862,6 +2871,7 @@ class GenerationMixin:
                     attentions=decoder_attentions,
                     hidden_states=decoder_hidden_states,
                     past_key_values=model_kwargs.get("past_key_values"),
+                    attention_mask=model_kwargs.get("attention_mask"),
                 )
         else:
             return input_ids
