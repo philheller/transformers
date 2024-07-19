@@ -265,6 +265,7 @@ class GenerateBeamDecoderOnlyOutput(ModelOutput):
     past_key_values: Optional[Tuple[Tuple[Tuple[torch.FloatTensor]]]] = None
     last_beam_scores: Optional[torch.FloatTensor] = None
     attention_mask: Optional[torch.LongTensor] = None
+    next_input_ids: Optional[torch.LongTensor] = None
 
 
 @dataclass
@@ -328,6 +329,7 @@ class GenerateBeamEncoderDecoderOutput(ModelOutput):
     past_key_values: Optional[Tuple[Tuple[Tuple[torch.FloatTensor]]]] = None
     last_beam_scores: Optional[torch.FloatTensor] = None
     attention_mask: Optional[torch.LongTensor] = None
+    next_input_ids: Optional[torch.LongTensor] = None
 
 
 # Equivalent classes (kept for retrocompatibility purposes)
@@ -2090,9 +2092,6 @@ class GenerationMixin:
                 )
 
         elif generation_mode == GenerationMode.GROUP_BEAM_SEARCH:
-            if generation_config.resume_generation:
-                # todo implement
-                print("Resuming generation")
             # 11. prepare beam search scorer
             beam_scorer = BeamSearchScorer(
                 batch_size=batch_size,
@@ -2103,28 +2102,46 @@ class GenerationMixin:
                 num_beam_hyps_to_keep=generation_config.num_return_sequences,
                 num_beam_groups=generation_config.num_beam_groups,
                 max_length=generation_config.max_length,
+                use_raw_hypotheses=generation_config.resume_generation,
             )
-            # 12. interleave input_ids with `num_beams` additional sequences per batch
-            input_ids, model_kwargs = self._expand_inputs_for_generation(
-                input_ids=input_ids,
-                expand_size=generation_config.num_beams,
-                is_encoder_decoder=self.config.is_encoder_decoder,
-                **model_kwargs,
-            )
-            # 13. run beam search
-            result = self._group_beam_search(
-                input_ids,
-                beam_scorer,
-                logits_processor=prepared_logits_processor,
-                stopping_criteria=prepared_stopping_criteria,
-                generation_config=generation_config,
-                synced_gpus=synced_gpus,
-                **model_kwargs,
-            )
+            if generation_config.resume_generation:
+                # 12. is obsolete for this, since the output of last generation is used
+                # which should already match the required shape
+                
+                # 13. run beam search
+                result = self._group_beam_search(
+                    input_ids,
+                    beam_scorer,
+                    logits_processor=prepared_logits_processor,
+                    stopping_criteria=prepared_stopping_criteria,
+                    generation_config=generation_config,
+                    synced_gpus=synced_gpus,
+                    last_scores=last_scores,
+                    last_beam_scores=last_beam_scores,
+                    **model_kwargs,
+                )
+            else:
+                # 12. interleave input_ids with `num_beams` additional sequences per batch
+                input_ids, model_kwargs = self._expand_inputs_for_generation(
+                    input_ids=input_ids,
+                    expand_size=generation_config.num_beams,
+                    is_encoder_decoder=self.config.is_encoder_decoder,
+                    **model_kwargs,
+                )
+                # 13. run beam search
+                result = self._group_beam_search(
+                    input_ids,
+                    beam_scorer,
+                    logits_processor=prepared_logits_processor,
+                    stopping_criteria=prepared_stopping_criteria,
+                    generation_config=generation_config,
+                    synced_gpus=synced_gpus,
+                    **model_kwargs,
+                )
 
         elif generation_mode == GenerationMode.CONSTRAINED_BEAM_SEARCH:
             if generation_config.resume_generation:
-                # todo implement
+                # todo:phil implement
                 print("Resuming generation")
             final_constraints = []
             if generation_config.constraints is not None:
@@ -3291,6 +3308,8 @@ class GenerationMixin:
         stopping_criteria: StoppingCriteriaList,
         generation_config: GenerationConfig,
         synced_gpus: bool,
+        last_beam_scores: Optional[torch.FloatTensor] = None,
+        last_scores: Optional[Tuple[torch.FloatTensor]] = None,
         **model_kwargs,
     ):
         r"""
@@ -3354,6 +3373,9 @@ class GenerationMixin:
 
         # init attention / hidden states / scores tuples
         scores = () if (return_dict_in_generate and output_scores) else None
+        # if available, use old scores
+        if last_scores is not None:
+            scores = last_scores # necessary to compare continuation of bs with vanilla bs
         raw_logits = () if (return_dict_in_generate and output_logits) else None
         decoder_attentions = () if (return_dict_in_generate and output_attentions) else None
         cross_attentions = () if (return_dict_in_generate and output_attentions) else None
@@ -3368,9 +3390,12 @@ class GenerationMixin:
 
         # initialise score of first beam of each group with 0 and the rest with -1e9. This ensures that the beams in
         # the same group don't produce same tokens everytime.
-        beam_scores = torch.full((batch_size, num_beams), -1e9, dtype=torch.float, device=device)
-        beam_scores[:, ::num_sub_beams] = 0
-        beam_scores = beam_scores.view((batch_size * num_beams,))
+        if last_beam_scores is not None:
+            beam_scores = last_beam_scores
+        else:
+            beam_scores = torch.full((batch_size, num_beams), -1e9, dtype=torch.float, device=device)
+            beam_scores[:, ::num_sub_beams] = 0
+            beam_scores = beam_scores.view((batch_size * num_beams,))
 
         this_peer_finished = False
 
@@ -3555,6 +3580,9 @@ class GenerationMixin:
                     cross_attentions=cross_attentions,
                     decoder_hidden_states=decoder_hidden_states,
                     past_key_values=model_kwargs.get("past_key_values"),
+                    last_beam_scores=beam_scores,
+                    attention_mask=model_kwargs.get("attention_mask"),
+                    next_input_ids=input_ids,
                 )
             else:
                 return GenerateBeamDecoderOnlyOutput(
@@ -3566,6 +3594,9 @@ class GenerationMixin:
                     attentions=decoder_attentions,
                     hidden_states=decoder_hidden_states,
                     past_key_values=model_kwargs.get("past_key_values"),
+                    last_beam_scores=beam_scores,
+                    attention_mask=model_kwargs.get("attention_mask"),
+                    next_input_ids=input_ids,
                 )
         else:
             return sequence_outputs["sequences"]
