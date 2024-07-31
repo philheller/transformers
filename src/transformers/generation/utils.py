@@ -3066,7 +3066,7 @@ class GenerationMixin:
         beam_scores = torch.zeros((batch_size, num_beams), dtype=torch.float, device=input_ids.device)
         if last_beam_scores is not None:
             beam_scores = last_beam_scores
-        else:
+        elif generation_config.resume_generation is False:
             beam_scores[:, 1:] = -1e9
         beam_scores = beam_scores.view((batch_size * num_beams,))
 
@@ -3396,6 +3396,8 @@ class GenerationMixin:
         # the same group don't produce same tokens everytime.
         if last_beam_scores is not None:
             beam_scores = last_beam_scores
+        elif generation_config.resume_generation is False:
+            beam_scores = torch.full((batch_size, num_beams), 0, dtype=torch.float, device=device)
         else:
             beam_scores = torch.full((batch_size, num_beams), -1e9, dtype=torch.float, device=device)
             beam_scores[:, ::num_sub_beams] = 0
