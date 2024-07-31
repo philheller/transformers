@@ -156,6 +156,7 @@ class GenerateDecoderOnlyOutput(ModelOutput):
     attentions: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     past_key_values: Optional[Tuple[Tuple[Tuple[torch.FloatTensor]]]] = None
+    # for continuation
     attention_mask: Optional[torch.LongTensor] = None
     logit_for_next_step: Optional[torch.FloatTensor] = None
     last_hidden_states: Optional[torch.FloatTensor] = None
@@ -212,6 +213,7 @@ class GenerateEncoderDecoderOutput(ModelOutput):
     cross_attentions: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     decoder_hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     past_key_values: Optional[Tuple[Tuple[Tuple[torch.FloatTensor]]]] = None
+    # for continuation
     attention_mask: Optional[torch.LongTensor] = None
     logit_for_next_step: Optional[torch.FloatTensor] = None
     last_hidden_states: Optional[torch.FloatTensor] = None
@@ -263,8 +265,9 @@ class GenerateBeamDecoderOnlyOutput(ModelOutput):
     attentions: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     past_key_values: Optional[Tuple[Tuple[Tuple[torch.FloatTensor]]]] = None
-    last_beam_scores: Optional[torch.FloatTensor] = None
+    # for continuation
     attention_mask: Optional[torch.LongTensor] = None
+    last_beam_scores: Optional[torch.FloatTensor] = None
     next_input_ids: Optional[torch.LongTensor] = None
 
 
@@ -327,8 +330,9 @@ class GenerateBeamEncoderDecoderOutput(ModelOutput):
     cross_attentions: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     decoder_hidden_states: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     past_key_values: Optional[Tuple[Tuple[Tuple[torch.FloatTensor]]]] = None
-    last_beam_scores: Optional[torch.FloatTensor] = None
+    # for continuation
     attention_mask: Optional[torch.LongTensor] = None
+    last_beam_scores: Optional[torch.FloatTensor] = None
     next_input_ids: Optional[torch.LongTensor] = None
 
 
