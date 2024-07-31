@@ -2964,6 +2964,19 @@ class GenerationMixin:
             past_key_values.reorder_cache(beam_idx)
         return past_key_values
 
+    def _reorder_attention_mask(self, beam_indices: Tuple[Tuple[int]], **model_kwargs):
+        last_tokens = [inner_tuple[-1] for inner_tuple in beam_indices]
+        last_indices = torch.tensor([token.item() for token in last_tokens])
+        # reorder the attention mask with last_indices
+        attention_mask = model_kwargs.get("attention_mask", None)
+        if attention_mask is not None:
+            # print("Reordered attention mask")
+            # print(attention_mask)
+            attention_mask = attention_mask[last_indices]
+            # print(attention_mask)
+            model_kwargs["attention_mask"] = attention_mask
+        return model_kwargs
+
     # TODO (joao, v4.42): remove default for `logits_warper`
     def _beam_search(
         self,
@@ -3075,6 +3088,10 @@ class GenerationMixin:
         decoder_prompt_len = input_ids.shape[-1]  # record the prompt length of decoder
 
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
+            # update attention_mask if beams have changed (for beams of unequal length)
+            if all(inner_tuple for inner_tuple in beam_indices):
+                model_kwargs = self._reorder_attention_mask(beam_indices, **model_kwargs)
+                # pass
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
             if generation_config.reproducibility is True:
                 torch.manual_seed(42) # this will reset the seed upon each loop
