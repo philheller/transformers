@@ -1621,6 +1621,7 @@ class GenerationMixin:
         logit_for_next_step: Optional[torch.Tensor] = None, # needed for testing continuation of cs
         last_hidden_states: Optional[torch.Tensor] = None, # needed for testing continuation of cs
         last_scores: Optional[torch.Tensor] = None, # needed for testing continuation of bs
+        original_prompt_length: Optional[int] = None,
         **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
         r"""
@@ -2057,8 +2058,11 @@ class GenerationMixin:
             if generation_config.resume_generation:
                 # 13. is obsolete for this, since the output of last generation is used
                 # which should already match the required shape
-                if last_beam_scores is not None or last_scores is not None:
-                    logger.warning_once("Continuing beam search with `resume_generation=True` and `last_beam_scores` or `last_scores` is meant to be used for testing purposes only. It may lead to unexpected results.")
+                
+                # needed: last_beam_scores, past_key_values, original_prompt_length
+                included_past_key_values = model_kwargs.get("past_key_values") is not None
+                if last_beam_scores is None or not included_past_key_values or original_prompt_length is None:
+                    logger.warning_once("Continued generation will need `last_beam_scores`, `past_key_values`, and `original_prompt_length` to be passed to `generate`.\nContinuing without them produces wrong sequence_scores.")
 
                 # 14. run beam sample
                 result = self._beam_search(
@@ -2071,6 +2075,7 @@ class GenerationMixin:
                     synced_gpus=synced_gpus,
                     last_beam_scores=last_beam_scores,
                     last_scores=last_scores,
+                    original_prompt_len=original_prompt_length,
                     **model_kwargs,
                 )
             else: 
@@ -2989,6 +2994,7 @@ class GenerationMixin:
         logits_warper: Optional[LogitsProcessorList] = None,
         last_beam_scores: Optional[torch.FloatTensor] = None,
         last_scores: Optional[Tuple[torch.FloatTensor]] = None,
+        original_prompt_len: int = None,
         **model_kwargs,
     ) -> Union[GenerateBeamOutput, torch.LongTensor]:
         r"""
@@ -3086,6 +3092,8 @@ class GenerationMixin:
         this_peer_finished = False
 
         decoder_prompt_len = input_ids.shape[-1]  # record the prompt length of decoder
+        if generation_config.resume_generation is True and original_prompt_len is not None:
+            decoder_prompt_len = original_prompt_len
 
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             # update attention_mask if beams have changed (for beams of unequal length)
