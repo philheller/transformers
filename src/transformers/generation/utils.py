@@ -1638,7 +1638,7 @@ class GenerationMixin:
         logit_for_next_step: Optional[torch.Tensor] = None, # needed for testing continuation of cs
         last_hidden_states: Optional[torch.Tensor] = None, # needed for testing continuation of cs
         last_scores: Optional[torch.Tensor] = None, # needed for testing continuation of bs
-        original_prompt_length: Optional[int] = None,
+        dynamic_decoder_prompt_length: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
         r"""
@@ -2104,8 +2104,8 @@ class GenerationMixin:
                 
                 # needed: last_beam_scores, past_key_values, original_prompt_length
                 included_past_key_values = model_kwargs.get("past_key_values") is not None
-                if last_beam_scores is None or not included_past_key_values or original_prompt_length is None:
-                    logger.warning_once("Continued generation will need `last_beam_scores`, `past_key_values`, and `original_prompt_length` to be passed to `generate`.\nContinuing without them produces wrong sequence_scores.")
+                if last_beam_scores is None or not included_past_key_values or dynamic_decoder_prompt_length is None:
+                    logger.warning_once("Continued generation will need `last_beam_scores`, `past_key_values`, and `dynamic_decoder_prompt_length` to be passed to `generate`.\nContinuing without them produces wrong sequence_scores.")
 
                 # 14. run beam sample
                 result = self._beam_search(
@@ -2118,7 +2118,7 @@ class GenerationMixin:
                     synced_gpus=synced_gpus,
                     last_beam_scores=last_beam_scores,
                     last_scores=last_scores,
-                    original_prompt_len=original_prompt_length,
+                    dynamic_decoder_prompt_len=dynamic_decoder_prompt_length,
                     **model_kwargs,
                 )
             else: 
@@ -3215,6 +3215,20 @@ class GenerationMixin:
             model_kwargs["attention_mask"] = attention_mask
         return model_kwargs
 
+    def _reorder_original_prompt_length(
+        self,
+        beam_indices: Tuple[Tuple[int]],
+        decoder_prompt_len: torch.Tensor
+    ):
+        returned_shape = decoder_prompt_len.shape
+        stacked_indices = torch.stack([
+            torch.tensor([token.item() for token in inner_tuple]) for inner_tuple in beam_indices
+        ])
+        last_indices = stacked_indices[:, -1]
+        # reorder based on last indices
+        decoder_prompt_len = decoder_prompt_len.flatten()[last_indices]
+        return decoder_prompt_len.view(returned_shape)
+
     # TODO (joao, v4.42): remove default for `logits_warper`
     def _beam_search(
         self,
@@ -3227,7 +3241,7 @@ class GenerationMixin:
         logits_warper: Optional[LogitsProcessorList],
         last_beam_scores: Optional[torch.FloatTensor] = None,
         last_scores: Optional[Tuple[torch.FloatTensor]] = None,
-        original_prompt_len: int = None,
+        dynamic_decoder_prompt_len: torch.Tensor = None,
         **model_kwargs,
     ) -> Union[GenerateBeamOutput, torch.LongTensor]:
         r"""
@@ -3325,14 +3339,15 @@ class GenerationMixin:
         this_peer_finished = False
 
         decoder_prompt_len = input_ids.shape[-1]  # record the prompt length of decoder
-        if generation_config.resume_generation is True and original_prompt_len is not None:
-            decoder_prompt_len = original_prompt_len
+        if generation_config.resume_generation is True:
+            decoder_prompt_len = dynamic_decoder_prompt_len
 
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             # update attention_mask if beams have changed (for beams of unequal length)
             if all(inner_tuple for inner_tuple in beam_indices):
                 model_kwargs = self._reorder_attention_mask(beam_indices, **model_kwargs)
-                # pass
+                if generation_config.resume_generation is True and isinstance(dynamic_decoder_prompt_len, torch.Tensor):
+                    decoder_prompt_len = self._reorder_original_prompt_length(beam_indices, decoder_prompt_len)
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
             if generation_config.reproducibility is True:
                 torch.manual_seed(42) # this will reset the seed upon each loop
