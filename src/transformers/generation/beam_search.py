@@ -15,7 +15,7 @@
 
 from abc import ABC, abstractmethod
 from collections import UserDict
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, Any
 
 import numpy as np
 import torch
@@ -225,6 +225,7 @@ class BeamSearchScorer(BeamScorer):
         beam_indices: Optional[torch.LongTensor] = None,
         group_index: Optional[int] = 0,
         decoder_prompt_len: Optional[Union[int, torch.Tensor]] = 0,
+        other: Optional[List[List[Any]]] = None, # accept additional data to be saved
     ) -> Dict[str, torch.Tensor]:
         # add up to the length which the next_scores is calculated on (including decoder prompt)
         cur_len = input_ids.shape[-1] + 1
@@ -292,6 +293,7 @@ class BeamSearchScorer(BeamScorer):
                         next_score.item(),
                         beam_indices=beam_index,
                         generated_len=cur_len - this_hyp_decoder_prompt_len,
+                        other=other[batch_idx][beam_idx] if other is not None else None,
                     )
                 else:
                     # add next predicted token since it is not eos_token
@@ -310,13 +312,12 @@ class BeamSearchScorer(BeamScorer):
                     f" {eos_token_id}`. Make sure {next_tokens[batch_idx]} are corrected."
                 )
 
-            # always chose length which would allow to attain highest score
             if isinstance(decoder_prompt_len, torch.Tensor):
                 if self.length_penalty >= 0.0:
-                    # for length penalty, shorter allows higher score
+                    # positive length penalty rewards longer sequences (-> chose min length)
                     this_decoder_prompt_len = decoder_prompt_len[batch_idx].min()
                 else:
-                    # negative length penalty rewards longer sequences (-> chose max length)
+                    # negative length penalty rewards shorter sequences (-> chose max length)
                     this_decoder_prompt_len = decoder_prompt_len[batch_idx].max()
             else:
                 this_decoder_prompt_len = decoder_prompt_len
@@ -344,6 +345,7 @@ class BeamSearchScorer(BeamScorer):
         eos_token_id: Optional[Union[int, List[int], torch.Tensor]] = None,
         beam_indices: Optional[torch.LongTensor] = None,
         decoder_prompt_len: Optional[Union[int,torch.Tensor]] = 0,
+        other: Optional[List[List[Any]]] = None,
     ) -> Tuple[torch.LongTensor]:
         batch_size = len(self._beam_hyps) // self.num_beam_groups
 
@@ -367,13 +369,20 @@ class BeamSearchScorer(BeamScorer):
                 # for dynamic prompt length
                 this_decoder_prompt_len = decoder_prompt_len.flatten()[batch_beam_idx].item() if type(decoder_prompt_len) == torch.Tensor else decoder_prompt_len
                 generated_len = final_tokens.shape[-1] - this_decoder_prompt_len
-                beam_hyp.add(final_tokens, final_score, beam_indices=beam_index, generated_len=generated_len)
+                beam_hyp.add(
+                    final_tokens,
+                    final_score,
+                    beam_indices=beam_index,
+                    generated_len=generated_len,
+                    other=other[batch_group_idx][beam_index] if other is not None else None,
+                )
 
         # select the best hypotheses
         sent_lengths = input_ids.new(batch_size * self.num_beam_hyps_to_keep)
         best = []
         best_indices = []
         best_scores = torch.zeros(batch_size * self.num_beam_hyps_to_keep, device=self.device, dtype=torch.float32)
+        other = []
 
         # retrieve best hypotheses
         for i in range(batch_size):
@@ -385,6 +394,7 @@ class BeamSearchScorer(BeamScorer):
                 best_score = best_hyp_tuple[0]
                 best_hyp = best_hyp_tuple[1]
                 best_index = best_hyp_tuple[2]
+                best_other = best_hyp_tuple[3]
                 sent_lengths[self.num_beam_hyps_to_keep * i + j] = len(best_hyp)
 
                 # append hyp to lists
@@ -392,6 +402,9 @@ class BeamSearchScorer(BeamScorer):
 
                 # append indices to list
                 best_indices.append(best_index)
+                
+                # append other to list
+                other.append(best_other)
 
                 best_scores[i * self.num_beam_hyps_to_keep + j] = best_score
 
@@ -430,6 +443,7 @@ class BeamSearchScorer(BeamScorer):
                 "sequences": decoded,
                 "sequence_scores": best_scores,
                 "beam_indices": indices,
+                "other": other,
             }
         )
 
@@ -975,6 +989,7 @@ class BeamHypotheses:
         sum_logprobs: float,
         beam_indices: Optional[torch.LongTensor] = None,
         generated_len: Optional[int] = None,
+        other: Optional[Any] = None,
     ):
         """
         Add a new hypothesis to the list.
@@ -986,9 +1001,9 @@ class BeamHypotheses:
             score = sum_logprobs / (hyp.shape[-1] ** self.length_penalty)
 
         if len(self) < self.num_beams or score > self.worst_score:
-            self.beams.append((score, hyp, beam_indices))
+            self.beams.append((score, hyp, beam_indices, other))
             if len(self) > self.num_beams:
-                sorted_next_scores = sorted([(s, idx) for idx, (s, _, _) in enumerate(self.beams)])
+                sorted_next_scores = sorted([(s, idx) for idx, (s, _, _, _) in enumerate(self.beams)])
                 del self.beams[sorted_next_scores[0][1]]
                 self.worst_score = sorted_next_scores[1][0]
             else:
