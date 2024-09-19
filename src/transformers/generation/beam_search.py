@@ -374,7 +374,7 @@ class BeamSearchScorer(BeamScorer):
                     final_score,
                     beam_indices=beam_index,
                     generated_len=generated_len,
-                    other=other[batch_group_idx][beam_index] if other is not None else None,
+                    other=other[batch_group_idx][index_per_group] if other is not None else None,
                 )
 
         # select the best hypotheses
