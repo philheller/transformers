@@ -1728,10 +1728,6 @@ class GenerationMixin:
         self._validate_model_class()
         tokenizer = kwargs.pop("tokenizer", None)  # Pull this out first, we only use it for stopping criteria
         generation_config, model_kwargs = self._prepare_generation_config(generation_config, **kwargs)
-        # todo:phil remove in prod
-        # print(generation_config, 
-        #         {k: v for k, v in model_kwargs.items() if k != 'past_key_values'}
-        #         ) 
         self._validate_model_kwargs(model_kwargs.copy())
         self._validate_assistant(assistant_model)
 
@@ -1934,11 +1930,6 @@ class GenerationMixin:
         )
 
         # 10. go into different generation modes
-        # todo:phil figure out for every mode, what continuation would look like
-        # ? input for every configuration step would have to be the output from the previous step
-        # ! leaving out speculative decoding for now
-        # print("GENERATION_MODE", generation_mode)
-
         if generation_mode == GenerationMode.ASSISTED_GENERATION:
             if generation_config.num_return_sequences > 1:
                 raise ValueError(
@@ -2130,7 +2121,6 @@ class GenerationMixin:
                     **model_kwargs,
                 )
 
-                print(20 * "#", " Running BS")
                 # 14. run beam sample
                 result = self._beam_search(
                     input_ids,
@@ -2192,9 +2182,6 @@ class GenerationMixin:
                 )
 
         elif generation_mode == GenerationMode.CONSTRAINED_BEAM_SEARCH:
-            # if generation_config.resume_generation:
-                # todo:phil implement
-                # print("Resuming generation")
             final_constraints = []
             if generation_config.constraints is not None:
                 final_constraints = generation_config.constraints
@@ -3208,10 +3195,7 @@ class GenerationMixin:
         # reorder the attention mask with last_indices
         attention_mask = model_kwargs.get("attention_mask", None)
         if attention_mask is not None:
-            # print("Reordered attention mask")
-            # print(attention_mask)
             attention_mask = attention_mask[last_indices]
-            # print(attention_mask)
             model_kwargs["attention_mask"] = attention_mask
         return model_kwargs
 
